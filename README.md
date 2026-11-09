@@ -7,9 +7,15 @@ Move Blizzard windows that Edit Mode does not let you move in **World of Warcraf
 - Drag supported Blizzard windows by their normal title area or movable anchor.
 - Move Blizzard combined bags or individual player/reagent bag windows; saved bag positions survive Blizzard bag re-anchoring.
 - Window positions are remembered between sessions.
+- Per-window scaling: hold **Ctrl** and mouse-wheel over a window's title to scale it (50%–200%).
+- Keyboard nudging: hover a window's title and use the arrow keys to nudge it a pixel at a time (Shift = 10px steps).
+- Off-screen protection: saved positions are clamped back onto the screen on show and after a resolution or UI-scale change; `/mwf rescue` pulls open windows back into view on demand.
+- Per-character layouts: optionally give the current character its own layout instead of the account-wide one.
+- Layout export / import as a plain-text string for sharing or backup.
+- Optional snap-to-grid while dragging and an optional overlay that highlights each draggable title strip.
 - Per-window enable/disable controls, grouped into clear Settings sections.
 - Lock all saved positions when you are done arranging the UI.
-- Reset individual windows or reset every saved position.
+- Reset individual windows or reset every saved position (with a confirmation prompt and `/mwf undo`).
 - Standalone Blizzard-style Settings window with the Forever Collection button.
 - Optional movable minimap button; left-click or right-click toggles Settings.
 - Unprotected supported windows remain movable during combat; WoW-protected frames stay locked until combat ends.
@@ -33,7 +39,19 @@ Movable Windows Forever now uses its own Blizzard-style Settings window instead 
 
 `/mwf`
 
-Use `/mwf reset` to clear all saved positions. The red **!** button opens the Forever Collection.
+Use `/mwf reset` to clear all saved positions (it asks to confirm first). The red **!** button opens the Forever Collection.
+
+Other slash commands:
+
+- `/mwf lock` / `/mwf unlock` — lock or unlock all windows.
+- `/mwf reset <window>` — reset a single window (see `/mwf list` for names).
+- `/mwf undo` — restore the layout from before the last reset.
+- `/mwf rescue` — bring any open, off-screen windows back into view.
+- `/mwf snap` — toggle snap-to-grid while dragging.
+- `/mwf list` — list managed windows and their state.
+- `/mwf help` — show the full command list.
+
+The **Layout Tools** section of Settings adds **Separate layout for this character**, **Snap to grid while dragging**, **Highlight movable windows**, and **Export** / **Import** buttons for sharing or backing up a layout.
 
 The **General** section includes **Show minimap button**. The minimap launcher can be dragged around the minimap and remembers its position between sessions. Both left-click and right-click toggle the Settings window.
 

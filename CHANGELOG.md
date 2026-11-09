@@ -1,3 +1,15 @@
+# 0.2.0
+- Off-screen protection: saved positions are now clamped back onto the screen when a window is shown and after any resolution or UI-scale change, so a layout saved at one resolution can no longer strand a window out of reach. Added `/mwf rescue` to pull any currently open window back into view on demand.
+- Per-character layouts: a new **Separate layout for this character** option (General → Layout Tools) keeps this character on its own window layout, stored in the new per-character saved variable; leave it off to keep sharing the account-wide layout. Switching reapplies the right layout immediately.
+- Reset safety: **Reset All Positions** and `/mwf reset` now ask for confirmation first, and `/mwf undo` restores the layout from before the last reset.
+- Per-window scaling: hold **Ctrl** and **mouse-wheel** over a window's title to scale it (50%–200%). The scale is saved, reapplied on login, included in exports, and cleared by Reset.
+- Layout export / import: **Export** copies a shareable text string of the current layout (positions, scales, enabled windows and options); **Import** applies a pasted string. The format is plain text with no code execution.
+- Snap to grid: an optional **Snap to grid while dragging** rounds a window to an 8px grid when you finish dragging it.
+- Keyboard nudging: hover a window's title and use the **arrow keys** to nudge it a pixel at a time (hold **Shift** for 10px steps).
+- Highlight movable windows: an optional overlay marks each window's draggable title strip with a faint band and its name, so invisible drag areas are easy to find.
+- Multi-anchor windows now save and restore every anchor point, not just the first.
+- Richer slash commands: `/mwf lock`, `/mwf unlock`, `/mwf snap`, `/mwf list`, `/mwf reset <window>`, `/mwf rescue`, `/mwf undo`, and `/mwf help`.
+
 # 0.1.79
 - The Legacy window (Y) can now be moved: known Legacy frame names are managed, and any other Legacy window is detected the first time it opens from its micro button or key.
 - The Achievements row is now "Achievements / Legacy" and covers both.

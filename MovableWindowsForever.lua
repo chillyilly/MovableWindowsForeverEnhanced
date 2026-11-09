@@ -1,6 +1,6 @@
 local ADDON_NAME, NS = ...
 local FUI = NS.ForeverUI   -- this addon's own copy of the Forever Options-window look (ForeverUI.lua)
-local VERSION = (C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetadata(ADDON_NAME, "Version")) or "0.1.79"
+local VERSION = (C_AddOns and C_AddOns.GetAddOnMetadata and C_AddOns.GetAddOnMetadata(ADDON_NAME, "Version")) or "0.2.0"
 
 local MWF = CreateFrame("Frame")
 local DB
@@ -30,6 +30,25 @@ local minimapMoving = false
 local ReanchorRaidManager
 local UpdateRaidManagerManagedState
 local RestoreRaidManagerNativePosition
+
+-- Profiles: MovableWindowsForeverDB is the account-wide layout; each character can
+-- opt into its own layout stored in MovableWindowsForeverCharDB. `DB` always points
+-- at whichever profile is currently active so the rest of the file is unchanged.
+local accountDB
+local charDB
+local ActiveProfile
+local ReapplyEverything
+local ApplyScale
+local ClampFrameToScreen
+local undoSnapshot   -- deep copy of positions/scales captured before a Reset All, for /mwf undo
+
+local VALID_ANCHOR_POINTS = {
+    TOPLEFT = true, TOP = true, TOPRIGHT = true,
+    LEFT = true, CENTER = true, RIGHT = true,
+    BOTTOMLEFT = true, BOTTOM = true, BOTTOMRIGHT = true,
+}
+
+local MIN_WINDOW_SCALE, MAX_WINDOW_SCALE = 0.50, 2.00
 
 local SETTINGS_FRAME_LEVEL = 2000
 local HEADER_LEVEL_OFFSET = 500
@@ -171,8 +190,12 @@ local DEFAULTS = {
     minimapPos = 220,
     raidManagerArrowRotation = 270,
     raidManagerToggleSkin = "EXPANDCOLLAPSE",
+    snapToGrid = false,
+    gridSize = 8,
+    highlightMovable = false,
     enabled = {},
     positions = {},
+    scales = {},
 }
 
 for _, def in ipairs(WINDOW_DEFS) do
@@ -186,41 +209,67 @@ for _, def in ipairs(WINDOW_DEFS) do
     WINDOW_DEF_BY_FRAME[def.frame] = def
 end
 
-local function CopyDefaults()
-    local t = {
-        locked = DEFAULTS.locked,
-        showMinimapButton = DEFAULTS.showMinimapButton,
-        minimapPos = DEFAULTS.minimapPos,
-        raidManagerArrowRotation = DEFAULTS.raidManagerArrowRotation,
-        raidManagerToggleSkin = DEFAULTS.raidManagerToggleSkin,
-        enabled = {},
-        positions = {},
-    }
-    for k, v in pairs(DEFAULTS.enabled) do t.enabled[k] = v end
+-- One user-facing group per label, shared by the Settings panel, the slash
+-- commands (/mwf list, /mwf reset <name>) and Legacy window discovery.
+local LABEL_ORDER = {}
+local LABEL_GROUPS = {}
+for _, def in ipairs(WINDOW_DEFS) do
+    local group = LABEL_GROUPS[def.label]
+    if not group then
+        group = { label = def.label, frames = {} }
+        LABEL_GROUPS[def.label] = group
+        LABEL_ORDER[#LABEL_ORDER + 1] = def.label
+    end
+    group.frames[#group.frames + 1] = def.frame
+end
+-- Windows discovered later (the Legacy window) append to this shared list so they
+-- are managed even before the Settings panel has been built.
+legacyGroupFrames = LABEL_GROUPS[LEGACY_LABEL] and LABEL_GROUPS[LEGACY_LABEL].frames or nil
+
+-- Fill any fields missing from a stored profile table (in place) so old saved
+-- variables and imported layouts always have the complete shape.
+local function NormalizeProfile(t)
+    if type(t) ~= "table" then t = {} end
+    if type(t.enabled) ~= "table" then t.enabled = {} end
+    if type(t.positions) ~= "table" then t.positions = {} end
+    if type(t.scales) ~= "table" then t.scales = {} end
+    if t.locked == nil then t.locked = DEFAULTS.locked end
+    if t.showMinimapButton == nil then t.showMinimapButton = DEFAULTS.showMinimapButton end
+    if type(t.minimapPos) ~= "number" then t.minimapPos = DEFAULTS.minimapPos end
+    if type(t.raidManagerArrowRotation) ~= "number" then
+        t.raidManagerArrowRotation = DEFAULTS.raidManagerArrowRotation
+    end
+    t.raidManagerArrowRotation = (math.floor((t.raidManagerArrowRotation % 360) / 90 + 0.5) % 4) * 90
+    t.raidManagerToggleSkin = tostring(t.raidManagerToggleSkin or DEFAULTS.raidManagerToggleSkin):upper()
+    if not RAID_MANAGER_TOGGLE_SKIN_VALID[t.raidManagerToggleSkin] then
+        t.raidManagerToggleSkin = DEFAULTS.raidManagerToggleSkin
+    end
+    if t.snapToGrid == nil then t.snapToGrid = DEFAULTS.snapToGrid end
+    if type(t.gridSize) ~= "number" or t.gridSize < 1 then t.gridSize = DEFAULTS.gridSize end
+    if t.highlightMovable == nil then t.highlightMovable = DEFAULTS.highlightMovable end
+    for frameName, enabled in pairs(DEFAULTS.enabled) do
+        if t.enabled[frameName] == nil then t.enabled[frameName] = enabled end
+    end
     return t
 end
 
+ActiveProfile = function()
+    if charDB and charDB.useOwn and type(charDB.data) == "table" then
+        return charDB.data
+    end
+    return accountDB
+end
+
 local function InitDB()
-    if type(MovableWindowsForeverDB) ~= "table" then
-        MovableWindowsForeverDB = CopyDefaults()
-    end
-    DB = MovableWindowsForeverDB
-    if type(DB.enabled) ~= "table" then DB.enabled = {} end
-    if type(DB.positions) ~= "table" then DB.positions = {} end
-    if DB.locked == nil then DB.locked = false end
-    if DB.showMinimapButton == nil then DB.showMinimapButton = true end
-    if type(DB.minimapPos) ~= "number" then DB.minimapPos = DEFAULTS.minimapPos end
-    if type(DB.raidManagerArrowRotation) ~= "number" then
-        DB.raidManagerArrowRotation = DEFAULTS.raidManagerArrowRotation
-    end
-    DB.raidManagerArrowRotation = (math.floor((DB.raidManagerArrowRotation % 360) / 90 + 0.5) % 4) * 90
-    DB.raidManagerToggleSkin = tostring(DB.raidManagerToggleSkin or DEFAULTS.raidManagerToggleSkin):upper()
-    if not RAID_MANAGER_TOGGLE_SKIN_VALID[DB.raidManagerToggleSkin] then
-        DB.raidManagerToggleSkin = DEFAULTS.raidManagerToggleSkin
-    end
-    for frameName, enabled in pairs(DEFAULTS.enabled) do
-        if DB.enabled[frameName] == nil then DB.enabled[frameName] = enabled end
-    end
+    if type(MovableWindowsForeverDB) ~= "table" then MovableWindowsForeverDB = {} end
+    accountDB = NormalizeProfile(MovableWindowsForeverDB)
+
+    if type(MovableWindowsForeverCharDB) ~= "table" then MovableWindowsForeverCharDB = {} end
+    charDB = MovableWindowsForeverCharDB
+    if charDB.useOwn == nil then charDB.useOwn = false end
+    charDB.data = NormalizeProfile(charDB.data)
+
+    DB = ActiveProfile()
 end
 
 local function UpdateMinimapButtonPosition()
@@ -433,6 +482,89 @@ end
 local function ResolveRelative(name)
     if name and _G[name] then return _G[name] end
     return UIParent
+end
+
+local function IsSpecialFrameName(frameName)
+    return frameName == "MinimapCluster" or frameName == "CompactRaidFrameManager"
+end
+
+-- Deep copy a saved-position / scales table (one level of nested tables is enough
+-- for the shapes MWF stores).
+local function DeepCopy(value)
+    if type(value) ~= "table" then return value end
+    local copy = {}
+    for k, v in pairs(value) do copy[k] = DeepCopy(v) end
+    return copy
+end
+
+-- Nudge a frame back onto the screen if a saved position (often made at a
+-- different resolution or UI scale) would leave it partly or fully off-screen.
+-- Guarded so it is a no-op for protected frames in combat or unsized frames.
+ClampFrameToScreen = function(frame)
+    if not frame or type(frame.GetLeft) ~= "function" then return end
+    if not CanTouchFrame(frame) then return end
+
+    local left, right = frame:GetLeft(), frame:GetRight()
+    local top, bottom = frame:GetTop(), frame:GetBottom()
+    if not (left and right and top and bottom) then return end
+
+    local fScale = (frame.GetEffectiveScale and frame:GetEffectiveScale()) or 1
+    local uiScale = (UIParent.GetEffectiveScale and UIParent:GetEffectiveScale()) or 1
+    if fScale <= 0 or uiScale <= 0 then return end
+
+    -- Work in physical screen pixels so frames at a different scale compare cleanly.
+    left, right, top, bottom = left * fScale, right * fScale, top * fScale, bottom * fScale
+    local screenW = (GetScreenWidth and GetScreenWidth() or 0) * uiScale
+    local screenH = (GetScreenHeight and GetScreenHeight() or 0) * uiScale
+    if screenW <= 0 or screenH <= 0 then return end
+
+    local margin = 4 * uiScale
+    local dx, dy = 0, 0
+    if left < margin then
+        dx = margin - left
+    elseif right > screenW - margin then
+        dx = (screenW - margin) - right
+    end
+    if bottom < margin then
+        dy = margin - bottom
+    elseif top > screenH - margin then
+        dy = (screenH - margin) - top
+    end
+    if dx == 0 and dy == 0 then return end
+
+    local point, relativeTo, relativePoint, x, y = frame:GetPoint(1)
+    if not point then return end
+    frame:ClearAllPoints()
+    frame:SetPoint(point, relativeTo, relativePoint, (x or 0) + dx / fScale, (y or 0) + dy / fScale)
+end
+
+-- Apply the saved per-window scale. Minimap and Raid Manager are special, secure
+-- frames and are intentionally left unscaled.
+ApplyScale = function(frameName)
+    if not DB or IsSpecialFrameName(frameName) then return end
+    local frame = _G[frameName]
+    if not frame or type(frame.SetScale) ~= "function" then return end
+    local scale = DB.scales and DB.scales[frameName]
+    if not scale then return end
+    if not CanTouchFrame(frame) then
+        pendingApply[frameName] = pendingApply[frameName] or true
+        return
+    end
+    frame:SetScale(scale)
+end
+
+-- Round a frame's anchor offsets to the configured grid after a drag.
+local function SnapFrameToGrid(frame)
+    if not DB or not DB.snapToGrid then return end
+    local grid = DB.gridSize or DEFAULTS.gridSize
+    if not grid or grid < 1 then return end
+    local point, relativeTo, relativePoint, x, y = frame:GetPoint(1)
+    if not point then return end
+    local sx = math.floor((x or 0) / grid + 0.5) * grid
+    local sy = math.floor((y or 0) / grid + 0.5) * grid
+    if sx == (x or 0) and sy == (y or 0) then return end
+    frame:ClearAllPoints()
+    frame:SetPoint(point, relativeTo, relativePoint, sx, sy)
 end
 
 local function PositionRaidManagerAnchorAtNativeDefault(anchor)
@@ -880,8 +1012,21 @@ local function ApplySavedPosition(frameName)
     end
 
     frame:ClearAllPoints()
-    frame:SetPoint(pos.point or "CENTER", ResolveRelative(pos.relative), pos.relativePoint or pos.point or "CENTER", pos.x or 0, pos.y or 0)
+    if type(pos.points) == "table" and #pos.points > 0 then
+        -- Multi-anchor frames restore every saved point.
+        for _, p in ipairs(pos.points) do
+            frame:SetPoint(p.point or "CENTER", ResolveRelative(p.relative), p.relativePoint or p.point or "CENTER", p.x or 0, p.y or 0)
+        end
+    else
+        frame:SetPoint(pos.point or "CENTER", ResolveRelative(pos.relative), pos.relativePoint or pos.point or "CENTER", pos.x or 0, pos.y or 0)
+    end
     if frame.SetUserPlaced then frame:SetUserPlaced(true) end
+
+    -- Scale first, then clamp, so the on-screen test uses the final size.
+    local scale = DB.scales and DB.scales[frameName]
+    if scale and type(frame.SetScale) == "function" then frame:SetScale(scale) end
+    ClampFrameToScreen(frame)
+
     pendingApply[frameName] = nil
 end
 
@@ -918,16 +1063,38 @@ local function SavePosition(frameName)
     local frame = _G[frameName]
     if not frame then return end
 
+    local numPoints = (frame.GetNumPoints and frame:GetNumPoints()) or 1
+    if numPoints < 1 then return end
+
     local point, relativeTo, relativePoint, x, y = frame:GetPoint(1)
     if not point then return end
 
-    DB.positions[frameName] = {
+    -- Keep the first point as flat fields for backward/export compatibility, and
+    -- additionally store every anchor point so multi-anchor frames restore exactly.
+    local saved = {
         point = point,
         relative = relativeTo and relativeTo.GetName and relativeTo:GetName() or "UIParent",
         relativePoint = relativePoint or point,
         x = x or 0,
         y = y or 0,
     }
+    if numPoints > 1 then
+        local points = {}
+        for i = 1, numPoints do
+            local p, rel, rp, px, py = frame:GetPoint(i)
+            if p then
+                points[#points + 1] = {
+                    point = p,
+                    relative = rel and rel.GetName and rel:GetName() or "UIParent",
+                    relativePoint = rp or p,
+                    x = px or 0,
+                    y = py or 0,
+                }
+            end
+        end
+        saved.points = points
+    end
+    DB.positions[frameName] = saved
 end
 
 local function RestoreRuntimeDefault(frameName)
@@ -940,7 +1107,11 @@ local function RestoreRuntimeDefault(frameName)
     end
 
     DB.positions[frameName] = nil
+    if DB.scales then DB.scales[frameName] = nil end
     if frame.SetUserPlaced then frame:SetUserPlaced(false) end
+    if type(frame.SetScale) == "function" and not IsSpecialFrameName(frameName) then
+        frame:SetScale(1)
+    end
 
     local points = runtimeDefaults[frameName]
     if points and #points > 0 then
@@ -959,6 +1130,7 @@ end
 
 local function ResetWindow(frameName)
     DB.positions[frameName] = nil
+    if DB.scales then DB.scales[frameName] = nil end
 
     if frameName == "MinimapCluster" then
         RestoreMinimapNativePosition()
@@ -1697,7 +1869,15 @@ local function UpdateDragHandles()
                 raidManagerDragHandle:EnableMouse(DB.enabled[frameName] and not DB.locked and not collapsed)
             end
         elseif frame and frame.MWFDragHandle then
-            frame.MWFDragHandle:EnableMouse(DB.enabled[frameName] and not DB.locked)
+            local handle = frame.MWFDragHandle
+            local movable = DB.enabled[frameName] and not DB.locked
+            handle:EnableMouse(movable)
+            local show = movable and DB.highlightMovable and true or false
+            if handle.MWFHighlight then
+                handle.MWFHighlight:SetColorTexture(1, 0.82, 0, 0.16)
+                handle.MWFHighlight:SetShown(show)
+            end
+            if handle.MWFHighlightLabel then handle.MWFHighlightLabel:SetShown(show) end
         end
     end
 end
@@ -1758,7 +1938,90 @@ local function InstallFrame(frameName)
     handle:SetFrameLevel((frame:GetFrameLevel() or 0) + 20)
     handle:EnableMouse(DB.enabled[frameName] and not DB.locked)
     handle:RegisterForDrag("LeftButton")
+    if handle.EnableMouseWheel then handle:EnableMouseWheel(true) end
+    if handle.SetPropagateKeyboardInput then handle:SetPropagateKeyboardInput(true) end
     frame.MWFDragHandle = handle
+
+    -- "Highlight movable windows" overlay: a faint band plus the window's label so
+    -- users can see what is grabbable (several windows are dragged by an invisible
+    -- strip over the title). Hidden unless the option is on.
+    local highlight = handle:CreateTexture(nil, "BACKGROUND")
+    highlight:SetAllPoints(handle)
+    highlight:SetColorTexture(1, 0.82, 0, 0.16)
+    highlight:Hide()
+    handle.MWFHighlight = highlight
+
+    local highlightLabel = handle:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    highlightLabel:SetPoint("CENTER", handle, "CENTER", 0, 0)
+    highlightLabel:SetText((WINDOW_DEF_BY_FRAME[frameName] and WINDOW_DEF_BY_FRAME[frameName].label) or frameName)
+    highlightLabel:Hide()
+    handle.MWFHighlightLabel = highlightLabel
+
+    local initialHighlight = DB.highlightMovable and DB.enabled[frameName] and not DB.locked and true or false
+    highlight:SetShown(initialHighlight)
+    highlightLabel:SetShown(initialHighlight)
+
+    local function MovableNow()
+        return DB and DB.enabled[frameName] and not DB.locked
+    end
+
+    handle:SetScript("OnEnter", function(self)
+        if not MovableNow() then return end
+        if self.MWFHighlight and DB.highlightMovable then self.MWFHighlight:SetColorTexture(1, 0.82, 0, 0.30) end
+        if self.EnableKeyboard then self:EnableKeyboard(true) end
+        FUI.ShowTip(self, "ANCHOR_TOP", (WINDOW_DEF_BY_FRAME[frameName] and WINDOW_DEF_BY_FRAME[frameName].label) or frameName,
+            "Drag to move. Arrow keys nudge (Shift = 10px). Ctrl + mouse-wheel scales.")
+    end)
+
+    handle:SetScript("OnLeave", function(self)
+        if self.MWFHighlight and DB and DB.highlightMovable then self.MWFHighlight:SetColorTexture(1, 0.82, 0, 0.16) end
+        if self.EnableKeyboard then self:EnableKeyboard(false) end
+        if self.SetPropagateKeyboardInput then self:SetPropagateKeyboardInput(true) end
+        FUI.HideTip()
+    end)
+
+    -- Ctrl + mouse-wheel over the title scales the window (0.50–2.00).
+    handle:SetScript("OnMouseWheel", function(self, delta)
+        if not IsControlKeyDown() or not MovableNow() then return end
+        if not CanTouchFrame(frame) then WarnProtectedCombat(frameName); return end
+        local current = (DB.scales and DB.scales[frameName]) or (frame.GetScale and frame:GetScale()) or 1
+        current = current + (delta > 0 and 0.05 or -0.05)
+        current = math.max(MIN_WINDOW_SCALE, math.min(MAX_WINDOW_SCALE, math.floor(current * 100 + 0.5) / 100))
+        DB.scales = DB.scales or {}
+        DB.scales[frameName] = current
+        if frame.SetScale then frame:SetScale(current) end
+        ClampFrameToScreen(frame)
+        local label = (WINDOW_DEF_BY_FRAME[frameName] and WINDOW_DEF_BY_FRAME[frameName].label) or frameName
+        print(string.format("|cffffd100Movable Windows Forever:|r %s scale %d%%.", label, math.floor(current * 100 + 0.5)))
+    end)
+
+    -- Arrow keys nudge the window pixel-by-pixel while the title is hovered.
+    handle:SetScript("OnKeyDown", function(self, key)
+        local dx, dy = 0, 0
+        local step = IsShiftKeyDown() and 10 or 1
+        if key == "UP" then dy = step
+        elseif key == "DOWN" then dy = -step
+        elseif key == "LEFT" then dx = -step
+        elseif key == "RIGHT" then dx = step
+        else
+            if self.SetPropagateKeyboardInput then self:SetPropagateKeyboardInput(true) end
+            return
+        end
+        -- It is an arrow key: only consume it when a nudge can actually happen,
+        -- otherwise let it propagate so normal movement/keybinds still work.
+        if not MovableNow() or not CanTouchFrame(frame) then
+            if self.SetPropagateKeyboardInput then self:SetPropagateKeyboardInput(true) end
+            return
+        end
+        if self.SetPropagateKeyboardInput then self:SetPropagateKeyboardInput(false) end
+        local point, relativeTo, relativePoint, x, y = frame:GetPoint(1)
+        if not point then return end
+        frame:ClearAllPoints()
+        frame:SetPoint(point, relativeTo, relativePoint, (x or 0) + dx, (y or 0) + dy)
+        if frame.SetUserPlaced then frame:SetUserPlaced(true) end
+        ClampFrameToScreen(frame)
+        SavePosition(frameName)
+    end)
 
     handle:SetScript("OnDragStart", function()
         if DB.locked or not DB.enabled[frameName] then return end
@@ -1788,6 +2051,7 @@ local function InstallFrame(frameName)
         end
 
         frame:StopMovingOrSizing()
+        SnapFrameToGrid(frame)
         if frame.SetUserPlaced then frame:SetUserPlaced(true) end
         SavePosition(frameName)
         if IsBagFrameName(frameName) then
@@ -1796,17 +2060,21 @@ local function InstallFrame(frameName)
     end)
 
     frame:HookScript("OnShow", function()
-        if DB.enabled[frameName] and DB.positions[frameName] then
-            if C_Timer and C_Timer.After then
-                C_Timer.After(0, function() ApplySavedPosition(frameName) end)
-            else
-                ApplySavedPosition(frameName)
-            end
+        if not DB.enabled[frameName] then return end
+        local function apply()
+            if DB.positions[frameName] then ApplySavedPosition(frameName) end
+            ApplyScale(frameName)
+        end
+        if C_Timer and C_Timer.After then
+            C_Timer.After(0, apply)
+        else
+            apply()
         end
     end)
 
-    if DB.enabled[frameName] and DB.positions[frameName] then
-        ApplySavedPosition(frameName)
+    if DB.enabled[frameName] then
+        if DB.positions[frameName] then ApplySavedPosition(frameName) end
+        ApplyScale(frameName)
     end
 end
 
@@ -1900,9 +2168,324 @@ local function InstallLegacyDiscoveryHooks()
     end
 end
 
-local function ResetAllWindows()
+-- Re-sync every managed window to the currently active profile. Used after a
+-- profile switch or a layout import so on-screen windows match the data at once.
+ReapplyEverything = function()
+    if not DB then return end
+    for _, def in ipairs(WINDOW_DEFS) do
+        local frameName = def.frame
+        if DB.enabled[frameName] then
+            -- Make sure the frame is managed, then match the active profile exactly:
+            -- apply a saved position, or restore the Blizzard default when the profile
+            -- has none (so a switch/import never leaves a window at a stale spot).
+            SetFrameEnabled(frameName, true)
+            if DB.positions[frameName] then
+                ApplySavedPosition(frameName)
+            elseif not IsSpecialFrameName(frameName) then
+                RestoreRuntimeDefault(frameName)
+            end
+        else
+            SetFrameEnabled(frameName, false)
+        end
+    end
+    for frameName in pairs(installed) do
+        if DB.enabled[frameName] then ApplyScale(frameName) end
+    end
+    UpdateDragHandles()
+    UpdateMinimapButtonVisibility()
+    -- Refresh the open Settings window's controls to the new values.
+    if optionsFrame and optionsFrame:IsShown() then
+        local onShow = optionsFrame:GetScript("OnShow")
+        if onShow then onShow(optionsFrame) end
+    end
+end
+
+local function SetProfileMode(useOwnProfile)
+    if not charDB then return end
+    charDB.useOwn = useOwnProfile and true or false
+    DB = ActiveProfile()
+    ReapplyEverything()
+    print("|cffffd100Movable Windows Forever:|r now using the "
+        .. (charDB.useOwn and "per-character" or "account-wide") .. " layout.")
+end
+
+local function DoResetAllWindows()
+    -- Snapshot the current layout so /mwf undo can bring it back.
+    undoSnapshot = { positions = DeepCopy(DB.positions), scales = DeepCopy(DB.scales) }
     for _, def in ipairs(WINDOW_DEFS) do
         ResetWindow(def.frame)
+    end
+    UpdateDragHandles()
+end
+
+StaticPopupDialogs = StaticPopupDialogs or {}
+StaticPopupDialogs["MWF_RESET_ALL"] = {
+    text = "Movable Windows Forever: reset ALL saved window positions and scales to Blizzard defaults?",
+    button1 = YES or "Yes",
+    button2 = NO or "No",
+    OnAccept = function()
+        DoResetAllWindows()
+        print("|cffffd100Movable Windows Forever:|r all saved positions reset. Use /mwf undo to restore.")
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    preferredIndex = 3,
+}
+
+local function ConfirmResetAll()
+    if StaticPopup_Show then
+        StaticPopup_Show("MWF_RESET_ALL")
+    else
+        DoResetAllWindows()
+    end
+end
+
+local function UndoLastReset()
+    if not undoSnapshot then
+        print("|cffffd100Movable Windows Forever:|r nothing to undo.")
+        return
+    end
+    DB.positions = undoSnapshot.positions or {}
+    DB.scales = undoSnapshot.scales or {}
+    undoSnapshot = nil
+    ReapplyEverything()
+    print("|cffffd100Movable Windows Forever:|r last reset undone.")
+end
+
+-- Bring any currently shown managed window that is off-screen back into view.
+-- Hidden windows self-correct when next opened (ApplySavedPosition clamps on show).
+local function RescueWindows()
+    local fixed = 0
+    for frameName in pairs(installed) do
+        if not IsSpecialFrameName(frameName) then
+            local frame = _G[frameName]
+            if frame and frame:IsShown() and DB.enabled[frameName] and CanTouchFrame(frame) then
+                local beforeX = select(4, frame:GetPoint(1))
+                ClampFrameToScreen(frame)
+                local afterX = select(4, frame:GetPoint(1))
+                if beforeX ~= afterX then
+                    SavePosition(frameName)
+                    fixed = fixed + 1
+                end
+            end
+        end
+    end
+    print(string.format("|cffffd100Movable Windows Forever:|r rescued %d on-screen window%s. Off-screen windows are corrected automatically when reopened.",
+        fixed, fixed == 1 and "" or "s"))
+end
+
+-- Re-clamp managed windows after a resolution or UI-scale change (deferred so
+-- UIParent has already resized), and persist the corrected positions.
+local function ReclampAllWindows()
+    if not DB then return end
+    for frameName in pairs(installed) do
+        if not IsSpecialFrameName(frameName) then
+            local frame = _G[frameName]
+            if frame and frame:IsShown() and DB.enabled[frameName] and DB.positions[frameName] and CanTouchFrame(frame) then
+                ClampFrameToScreen(frame)
+                SavePosition(frameName)
+            end
+        end
+    end
+end
+
+-- Layout export / import -------------------------------------------------------------------------------------------
+-- A plain, line-based text format (no loadstring) so layouts can be shared or
+-- backed up. Lines: "MWF1" header, "S|..." settings, one "W|..." per window.
+local function ExportLayout()
+    local lines = { "MWF1" }
+    lines[#lines + 1] = table.concat({
+        "S",
+        DB.locked and 1 or 0,
+        DB.snapToGrid and 1 or 0,
+        DB.gridSize or DEFAULTS.gridSize,
+        DB.highlightMovable and 1 or 0,
+    }, "|")
+    for _, def in ipairs(WINDOW_DEFS) do
+        local f = def.frame
+        local pos = DB.positions[f]
+        local scale = DB.scales and DB.scales[f]
+        local enabled = DB.enabled[f]
+        if pos or scale or enabled == false then
+            local p = pos or {}
+            lines[#lines + 1] = table.concat({
+                "W", f, enabled and 1 or 0, scale or 1,
+                p.point or "", p.relative or "", p.relativePoint or "",
+                p.x or 0, p.y or 0,
+            }, "|")
+        end
+    end
+    return table.concat(lines, "\n")
+end
+
+local function ImportLayout(str)
+    if type(str) ~= "string" or str == "" then return false, "No data provided." end
+    if not str:match("^%s*MWF1") then return false, "Unrecognized format (expected an MWF1 layout string)." end
+
+    local settings
+    local newPositions, newScales, newEnabled = {}, {}, {}
+    local count = 0
+    for line in str:gmatch("[^\r\n]+") do
+        if line:sub(1, 2) == "S|" then
+            local a, b, c, d = line:match("^S|([^|]*)|([^|]*)|([^|]*)|([^|]*)")
+            settings = {
+                locked = a == "1",
+                snapToGrid = b == "1",
+                gridSize = tonumber(c) or DEFAULTS.gridSize,
+                highlightMovable = d == "1",
+            }
+        elseif line:sub(1, 2) == "W|" then
+            local parts = {}
+            for field in (line .. "|"):gmatch("([^|]*)|") do parts[#parts + 1] = field end
+            local f = parts[2]
+            if f and (WINDOW_DEF_BY_FRAME[f] or f == "MinimapCluster") then
+                newEnabled[f] = parts[3] == "1"
+                local sc = tonumber(parts[4])
+                if sc then newScales[f] = math.max(MIN_WINDOW_SCALE, math.min(MAX_WINDOW_SCALE, sc)) end
+                local point = parts[5]
+                if VALID_ANCHOR_POINTS[point] then
+                    newPositions[f] = {
+                        point = point,
+                        relative = (parts[6] ~= "" and _G[parts[6]] and parts[6]) or "UIParent",
+                        relativePoint = VALID_ANCHOR_POINTS[parts[7]] and parts[7] or point,
+                        x = tonumber(parts[8]) or 0,
+                        y = tonumber(parts[9]) or 0,
+                    }
+                end
+                count = count + 1
+            end
+        end
+    end
+
+    if count == 0 and not settings then return false, "No windows found in the layout string." end
+
+    if settings then
+        DB.locked = settings.locked
+        DB.snapToGrid = settings.snapToGrid
+        DB.gridSize = (settings.gridSize >= 1) and settings.gridSize or DEFAULTS.gridSize
+        DB.highlightMovable = settings.highlightMovable
+    end
+    for f, v in pairs(newEnabled) do DB.enabled[f] = v end
+    DB.positions = newPositions
+    DB.scales = newScales
+    ReapplyEverything()
+    return true, string.format("Imported %d window%s.", count, count == 1 and "" or "s")
+end
+
+-- Shared multi-line text dialog used for Export (read-only) and Import (editable).
+local ioDialog
+local function ShowTextDialog(titleText, bodyText, readOnly, onAccept)
+    if not ioDialog then
+        local dlg = CreateFrame("Frame", "MovableWindowsForeverIODialog", UIParent, "DefaultPanelTemplate")
+        dlg:SetSize(440, 340)
+        dlg:SetPoint("CENTER")
+        dlg:SetFrameStrata("FULLSCREEN_DIALOG")
+        dlg:SetToplevel(true)
+        dlg:SetMovable(true)
+        dlg:EnableMouse(true)
+        dlg:RegisterForDrag("LeftButton")
+        dlg:SetScript("OnDragStart", function(self) self:StartMoving() end)
+        dlg:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+        ApplyBlizzardPanelBackground(dlg)
+
+        dlg.title = dlg:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+        dlg.title:SetPoint("TOPLEFT", 16, -10)
+
+        local close = CreateFrame("Button", nil, dlg, "UIPanelCloseButton")
+        close:SetPoint("TOPRIGHT", -4, -4)
+        close:SetScript("OnClick", function() dlg:Hide() end)
+
+        local scroll = CreateFrame("ScrollFrame", "$parentScroll", dlg, "UIPanelScrollFrameTemplate")
+        scroll:SetPoint("TOPLEFT", 16, -40)
+        scroll:SetPoint("BOTTOMRIGHT", -34, 48)
+
+        local edit = CreateFrame("EditBox", nil, scroll)
+        edit:SetMultiLine(true)
+        edit:SetFontObject(ChatFontNormal or GameFontHighlight)
+        edit:SetWidth(380)
+        edit:SetAutoFocus(false)
+        edit:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+        scroll:SetScrollChild(edit)
+        dlg.edit = edit
+
+        local accept = CreateFrame("Button", nil, dlg, "UIPanelButtonTemplate")
+        accept:SetSize(120, 22)
+        accept:SetPoint("BOTTOMLEFT", 16, 16)
+        dlg.accept = accept
+
+        local cancel = CreateFrame("Button", nil, dlg, "UIPanelButtonTemplate")
+        cancel:SetSize(120, 22)
+        cancel:SetPoint("BOTTOMRIGHT", -16, 16)
+        cancel:SetText(CANCEL or "Cancel")
+        cancel:SetScript("OnClick", function() dlg:Hide() end)
+
+        if UISpecialFrames then UISpecialFrames[#UISpecialFrames + 1] = dlg:GetName() end
+        ioDialog = dlg
+    end
+
+    local dlg = ioDialog
+    ApplyBlizzardPanelBackground(dlg)
+    dlg.title:SetText(titleText or "")
+    dlg.edit:SetText(bodyText or "")
+    dlg.edit:SetCursorPosition(0)
+
+    dlg.edit:SetScript("OnTextChanged", nil)
+    if readOnly then
+        -- Export: select the whole string so the player can copy it with Ctrl+C.
+        -- The box stays editable (it is only a throwaway copy to read out).
+        dlg.accept:SetText("Select All")
+        dlg.accept:SetScript("OnClick", function()
+            dlg.edit:SetFocus()
+            dlg.edit:HighlightText()
+        end)
+        dlg.edit:SetFocus()
+        dlg.edit:HighlightText()
+    else
+        dlg.accept:SetText(ACCEPT or "Import")
+        dlg.accept:SetScript("OnClick", function()
+            local text = dlg.edit:GetText()
+            dlg:Hide()
+            if onAccept then onAccept(text) end
+        end)
+        dlg.edit:SetFocus()
+    end
+
+    dlg:Show()
+    dlg:Raise()
+end
+
+-- Reset every frame grouped under a user-facing label (used by /mwf reset <name>).
+local function ResetGroupByLabel(labelLower)
+    for label, group in pairs(LABEL_GROUPS) do
+        if label:lower() == labelLower then
+            for _, frameName in ipairs(group.frames) do
+                ResetWindow(frameName)
+            end
+            UpdateDragHandles()
+            print("|cffffd100Movable Windows Forever:|r reset '" .. label .. "'.")
+            return true
+        end
+    end
+    return false
+end
+
+local function ListWindows()
+    print("|cffffd100Movable Windows Forever|r — managed windows ("
+        .. (charDB and charDB.useOwn and "per-character" or "account-wide") .. " layout):")
+    for _, label in ipairs(LABEL_ORDER) do
+        local group = LABEL_GROUPS[label]
+        local enabled, hasPos, scaled = false, false, nil
+        for _, frameName in ipairs(group.frames) do
+            if DB.enabled[frameName] then enabled = true end
+            if DB.positions[frameName] then hasPos = true end
+            if DB.scales[frameName] then scaled = DB.scales[frameName] end
+        end
+        local bits = {}
+        bits[#bits + 1] = enabled and "|cff40ff40on|r" or "|cffff4040off|r"
+        if hasPos then bits[#bits + 1] = "moved" end
+        if scaled then bits[#bits + 1] = string.format("%d%%", math.floor(scaled * 100 + 0.5)) end
+        print("  " .. label .. " — " .. table.concat(bits, ", "))
     end
 end
 
@@ -1934,7 +2517,7 @@ local function BuildOptions()
     if optionsFrame then return optionsFrame end
 
     local panel = CreateFrame("Frame", "MovableWindowsForeverOptions", UIParent, "DefaultPanelTemplate")
-    panel:SetSize(650, 650)
+    panel:SetSize(650, 724)
     panel:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
     panel:SetFrameStrata("LOW")
     panel:SetFrameLevel(SETTINGS_FRAME_LEVEL)
@@ -2011,7 +2594,7 @@ local function BuildOptions()
     desc:SetPoint("TOPLEFT", 24, -48)
     desc:SetPoint("RIGHT", panel, "RIGHT", -24, 0)
     desc:SetJustifyH("LEFT")
-    desc:SetText("Drag supported Blizzard windows by their title area or movable anchor. Drag the Minimap by its zone title. Positions are remembered automatically.")
+    desc:SetText("Drag supported Blizzard windows by their title area or movable anchor. Drag the Minimap by its zone title. Positions are remembered automatically. Ctrl + mouse-wheel a title to scale a window; hover a title and use arrow keys to nudge it.")
     FUI.Font(desc, "desc")
 
     local function MakeSectionHeader(parent, x, y, width, label)
@@ -2059,19 +2642,9 @@ local function BuildOptions()
 
     panel.rows = {}
 
-    -- Group alternate Blizzard frame names under one user-facing row. This keeps
-    -- the settings list clean while retaining compatibility with different clients.
-    local groupByLabel = {}
-    for _, def in ipairs(WINDOW_DEFS) do
-        local group = groupByLabel[def.label]
-        if not group then
-            group = { label = def.label, frames = {} }
-            groupByLabel[def.label] = group
-        end
-        group.frames[#group.frames + 1] = def.frame
-    end
-    -- Windows discovered later (the Legacy window) join this row's frame list.
-    legacyGroupFrames = groupByLabel[LEGACY_LABEL] and groupByLabel[LEGACY_LABEL].frames or legacyGroupFrames
+    -- Reuse the shared label groups (also used by the slash commands and Legacy
+    -- discovery) so alternate Blizzard frame names stay under one user-facing row.
+    local groupByLabel = LABEL_GROUPS
 
     -- Explicit section order keeps the UI stable and human-readable instead of
     -- exposing the internal WINDOW_DEFS/API order.
@@ -2291,6 +2864,69 @@ local function BuildOptions()
         end
     end
 
+    -- Layout Tools -------------------------------------------------------------
+    MakeSectionHeader(panel, 24, -584, 602, "Layout Tools")
+
+    local profileCheck = MakeCheckbox(panel, 24, -606, "Separate layout for this character", function()
+        return charDB and charDB.useOwn
+    end, function(v)
+        SetProfileMode(v)
+    end)
+    profileCheck:SetScript("OnEnter", function(self)
+        FUI.ShowTip(self, "ANCHOR_TOP", "Per-character layout",
+            "On: this character keeps its own window layout. Off: share the account-wide layout.")
+    end)
+    profileCheck:SetScript("OnLeave", function() FUI.HideTip() end)
+    panel.profileCheck = profileCheck
+
+    local snapCheck = MakeCheckbox(panel, 338, -606, "Snap to grid while dragging", function()
+        return DB and DB.snapToGrid
+    end, function(v)
+        DB.snapToGrid = v and true or false
+    end)
+    snapCheck:SetScript("OnEnter", function(self)
+        FUI.ShowTip(self, "ANCHOR_TOP", "Snap to grid",
+            "Rounds a window to an " .. (DB and DB.gridSize or DEFAULTS.gridSize) .. "px grid when you finish dragging it.")
+    end)
+    snapCheck:SetScript("OnLeave", function() FUI.HideTip() end)
+    panel.snapCheck = snapCheck
+
+    local highlightCheck = MakeCheckbox(panel, 24, -630, "Highlight movable windows", function()
+        return DB and DB.highlightMovable
+    end, function(v)
+        DB.highlightMovable = v and true or false
+        UpdateDragHandles()
+    end)
+    highlightCheck:SetScript("OnEnter", function(self)
+        FUI.ShowTip(self, "ANCHOR_TOP", "Highlight movable windows",
+            "Marks each window's draggable title strip with a faint band and label.")
+    end)
+    highlightCheck:SetScript("OnLeave", function() FUI.HideTip() end)
+    panel.highlightCheck = highlightCheck
+
+    local exportBtn = MakeButton(panel, "Export", 90, 22)
+    exportBtn:SetPoint("TOPLEFT", panel, "TOPLEFT", 338, -632)
+    exportBtn:SetScript("OnClick", function()
+        ShowTextDialog("Export Layout", ExportLayout(), true)
+    end)
+    exportBtn:SetScript("OnEnter", function(self)
+        FUI.ShowTip(self, "ANCHOR_TOP", "Export Layout", "Copy a shareable string of the current layout.")
+    end)
+    exportBtn:SetScript("OnLeave", function() FUI.HideTip() end)
+
+    local importBtn = MakeButton(panel, "Import", 90, 22)
+    importBtn:SetPoint("TOPLEFT", panel, "TOPLEFT", 436, -632)
+    importBtn:SetScript("OnClick", function()
+        ShowTextDialog("Import Layout", "", false, function(text)
+            local ok, info = ImportLayout(text)
+            print("|cffffd100Movable Windows Forever:|r " .. (ok and ("layout imported. " .. (info or "")) or ("import failed — " .. (info or "unknown error."))))
+        end)
+    end)
+    importBtn:SetScript("OnEnter", function(self)
+        FUI.ShowTip(self, "ANCHOR_TOP", "Import Layout", "Paste a layout string to replace the current layout.")
+    end)
+    importBtn:SetScript("OnLeave", function() FUI.HideTip() end)
+
     local bottomLine = panel:CreateTexture(nil, "ARTWORK")
     bottomLine:SetColorTexture(0.45, 0.38, 0.24, 0.75)
     bottomLine:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 24, 52)
@@ -2300,7 +2936,7 @@ local function BuildOptions()
 
     local resetAll = MakeButton(panel, "Reset All Positions", 150, 24)
     resetAll:SetPoint("BOTTOMLEFT", panel, "BOTTOMLEFT", 24, 18)
-    resetAll:SetScript("OnClick", ResetAllWindows)
+    resetAll:SetScript("OnClick", ConfirmResetAll)
 
     local footer = panel:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
     footer:SetPoint("LEFT", resetAll, "RIGHT", 12, 0)
@@ -2313,6 +2949,9 @@ local function BuildOptions()
         ApplyBlizzardPanelBackground(self)
         if self.lockCheck then self.lockCheck:SetChecked(DB.locked and true or false) end
         if self.minimapCheck then self.minimapCheck:SetChecked(DB.showMinimapButton ~= false) end
+        if self.profileCheck then self.profileCheck:SetChecked(charDB and charDB.useOwn and true or false) end
+        if self.snapCheck then self.snapCheck:SetChecked(DB.snapToGrid and true or false) end
+        if self.highlightCheck then self.highlightCheck:SetChecked(DB.highlightMovable and true or false) end
         if self.SyncRaidRotationSlider then self.SyncRaidRotationSlider() end
         if self.SyncRaidToggleSkinDropdown then self.SyncRaidToggleSkinDropdown() end
         for _, row in ipairs(self.rows or {}) do
@@ -2343,11 +2982,52 @@ end
 
 SLASH_MOVABLEWINDOWSFOREVER1 = "/mwf"
 SLASH_MOVABLEWINDOWSFOREVER2 = "/movablewindows"
+local function PrintSlashHelp()
+    print("|cffffd100Movable Windows Forever|r commands:")
+    print("  |cffffff00/mwf|r — open Settings")
+    print("  |cffffff00/mwf reset|r — reset all positions (asks to confirm)")
+    print("  |cffffff00/mwf reset <window>|r — reset one window (see /mwf list for names)")
+    print("  |cffffff00/mwf undo|r — restore the layout from before the last reset")
+    print("  |cffffff00/mwf lock|r / |cffffff00unlock|r — lock or unlock all windows")
+    print("  |cffffff00/mwf rescue|r — bring off-screen windows back into view")
+    print("  |cffffff00/mwf snap|r — toggle snap-to-grid while dragging")
+    print("  |cffffff00/mwf list|r — list managed windows and their state")
+    print("  Tip: Ctrl + mouse-wheel a window's title to scale it; hover a title and use arrow keys to nudge.")
+end
+
 SlashCmdList.MOVABLEWINDOWSFOREVER = function(msg)
-    msg = (msg or ""):lower():match("^%s*(.-)%s*$")
-    if msg == "reset" or msg == "resetall" then
-        ResetAllWindows()
-        print("|cffffd100Movable Windows Forever:|r all saved positions reset.")
+    msg = (msg or ""):lower():gsub("%s+", " "):match("^%s*(.-)%s*$")
+    local cmd, rest = msg:match("^(%S*)%s*(.-)$")
+
+    if cmd == "" then
+        OpenSettings()
+    elseif cmd == "reset" or cmd == "resetall" then
+        if rest and rest ~= "" then
+            if not ResetGroupByLabel(rest) then
+                print("|cffffd100Movable Windows Forever:|r no window called '" .. rest .. "'. Try /mwf list.")
+            end
+        else
+            ConfirmResetAll()
+        end
+    elseif cmd == "undo" then
+        UndoLastReset()
+    elseif cmd == "lock" then
+        DB.locked = true
+        UpdateDragHandles()
+        print("|cffffd100Movable Windows Forever:|r windows locked.")
+    elseif cmd == "unlock" then
+        DB.locked = false
+        UpdateDragHandles()
+        print("|cffffd100Movable Windows Forever:|r windows unlocked.")
+    elseif cmd == "rescue" then
+        RescueWindows()
+    elseif cmd == "snap" then
+        DB.snapToGrid = not DB.snapToGrid
+        print("|cffffd100Movable Windows Forever:|r snap-to-grid " .. (DB.snapToGrid and "on" or "off") .. ".")
+    elseif cmd == "list" then
+        ListWindows()
+    elseif cmd == "help" then
+        PrintSlashHelp()
     else
         OpenSettings()
     end
@@ -2383,6 +3063,15 @@ MWF:SetScript("OnEvent", function(_, event, arg1)
     elseif event == "PLAYER_ENTERING_WORLD" or event == "DISPLAY_SIZE_CHANGED" or event == "UI_SCALE_CHANGED" then
         InstallAvailableFrames()
         ScheduleMinimapPositionRefresh()
+        if event ~= "PLAYER_ENTERING_WORLD" then
+            -- A resolution or UI-scale change can push saved positions off-screen.
+            -- Re-clamp shown windows once UIParent has finished resizing.
+            if C_Timer and C_Timer.After then
+                C_Timer.After(0.1, ReclampAllWindows)
+            else
+                ReclampAllWindows()
+            end
+        end
     elseif event == "PLAYER_REGEN_DISABLED" then
         -- Blizzard fires this immediately before combat lockdown takes effect.
         -- Finish any drag already in progress while protected frame methods are
@@ -2465,6 +3154,7 @@ MWF:SetScript("OnEvent", function(_, event, arg1)
                 end
             else
                 ApplySavedPosition(frameName)
+                ApplyScale(frameName)
             end
         end
     end

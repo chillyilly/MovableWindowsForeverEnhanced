@@ -3,8 +3,9 @@
 ## Category: Darkspore Forever Addons
 ## Notes: Move Blizzard windows that Edit Mode cannot move, remember their positions, and reset them at any time.
 ## Author: Darkspore
-## Version: 0.1.79
+## Version: 0.2.0
 ## SavedVariables: MovableWindowsForeverDB
+## SavedVariablesPerCharacter: MovableWindowsForeverCharDB
 ## IconTexture: Interface\AddOns\MovableWindowsForever\Media\MWFIcon.tga
 
 DarksporeCatalogueForever.lua
