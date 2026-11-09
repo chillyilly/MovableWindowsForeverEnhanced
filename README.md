@@ -2,6 +2,25 @@
 
 Move Blizzard windows that Edit Mode does not let you move in **World of Warcraft: Forever**.
 
+> This is the **Enhanced** edition — it builds on Movable Windows Forever with the extra options listed below (v0.2.0).
+
+## What's enhanced (v0.2.0)
+
+Everything the original does, plus:
+
+- **Per-window scaling** — hold **Ctrl** and mouse-wheel over a window's title to scale it (50%–200%). Saved per window and reapplied on login.
+- **Keyboard nudging** — hover a window's title and use the **arrow keys** to move it one pixel at a time (**Shift** = 10px steps).
+- **Off-screen protection** — saved positions are automatically pulled back onto the screen when a window opens and after any resolution or UI-scale change, so a layout saved on one setup can't strand a window out of reach. `/mwf rescue` fixes open windows on demand.
+- **Per-character layouts** — optionally give the current character its own window layout instead of the shared account-wide one (**Layout Tools → Separate layout for this character**).
+- **Snap to grid** — optional 8px grid snap when you finish dragging a window (**Layout Tools**).
+- **Highlight movable windows** — optional overlay that marks each window's draggable title strip with a faint band and its name, so invisible drag areas are easy to find.
+- **Layout export / import** — copy your whole layout (positions, scales, enabled windows, options) to a shareable plain-text string, or paste one in. No code execution.
+- **Reset safety** — **Reset All Positions** and `/mwf reset` now ask for confirmation, and **`/mwf undo`** restores the layout from before the last reset.
+- **Multi-anchor windows** — windows anchored by more than one point now save and restore every anchor point, not just the first.
+- **More slash commands** — `/mwf lock`, `/mwf unlock`, `/mwf snap`, `/mwf list`, `/mwf reset <window>`, `/mwf rescue`, `/mwf undo`, `/mwf help`.
+
+A new **Layout Tools** section in the Settings window groups the per-character, snap, highlight, and export/import controls. See the [CHANGELOG](CHANGELOG.md) for the full history.
+
 ## Installation
 
 1. Download the addon:
