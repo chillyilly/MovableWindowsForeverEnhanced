@@ -2,6 +2,20 @@
 
 Move Blizzard windows that Edit Mode does not let you move in **World of Warcraft: Forever**.
 
+## Installation
+
+1. Download the addon:
+   - From this repo, click **Code → Download ZIP** (or clone it), **or** grab a tagged release under **Releases**.
+2. Extract it. You will get a folder whose contents include `MovableWindowsForever.toc`.
+3. Make sure the folder is named exactly **`MovableWindowsForever`** (GitHub ZIPs unpack as `MovableWindowsForeverEnhanced-main` or similar — rename it to `MovableWindowsForever`, matching the `.toc`, or the addon will not load).
+4. Copy that `MovableWindowsForever` folder into your WoW Forever AddOns directory:
+   - `World of Warcraft/<version>/Interface/AddOns/`
+   - The final path should be `.../Interface/AddOns/MovableWindowsForever/MovableWindowsForever.toc`.
+5. Restart WoW, or at the character-select/login screen open the **AddOns** list and ensure **Movable Windows Forever** is enabled (tick **Load out of date AddOns** if needed).
+6. Log in and type **`/mwf`** to open Settings.
+
+This addon targets the **WoW Forever** client (`## Interface: 16001`). It will not load on retail or Classic Blizzard clients without adjusting the interface version.
+
 ## Features
 
 - Drag supported Blizzard windows by their normal title area or movable anchor.
